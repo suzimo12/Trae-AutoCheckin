@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: acme-cert
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   sign:
@@ -23,17 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore acme.sh state
-        uses: actions/cache@v4
-        with:
-          path: /root/.acme.sh
-          key: acme-state-v1
-
       - name: Install acme.sh
         run: |
-          if [ ! -x /root/.acme.sh/acme.sh ]; then
-            curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null
-          fi
+          curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null 2>&1 || true
+          chmod +x /root/.acme.sh/acme.sh
+          /root/.acme.sh/acme.sh --version | tail -1
 
       - name: Sign CSR (renews only when due)
         env:
