@@ -26,15 +26,15 @@ jobs:
       - name: Install acme.sh
         run: |
           curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null 2>&1 || true
-          chmod +x /root/.acme.sh/acme.sh
-          /root/.acme.sh/acme.sh --version | tail -1
+          chmod +x "$HOME/.acme.sh/acme.sh"
+          "$HOME/.acme.sh/acme.sh" --version | tail -1
 
       - name: Sign CSR (renews only when due)
         env:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
         run: |
-          /root/.acme.sh/acme.sh --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt
-          CERTDIR=$(ls -d /root/.acme.sh/suzimo.duckdns.org* | head -1)
+          "$HOME/.acme.sh/acme.sh" --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt
+          CERTDIR=$(ls -d "$HOME"/.acme.sh/suzimo.duckdns.org* | head -1)
           cp "$CERTDIR/fullchain.cer" certs/fullchain.pem
           openssl x509 -in certs/fullchain.pem -noout -subject -enddate
 
