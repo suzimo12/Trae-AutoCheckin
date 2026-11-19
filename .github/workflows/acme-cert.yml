@@ -1,0 +1,57 @@
+name: ACME TLS Cert (DNS-01 via DuckDNS)
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - "certs/**"
+      - ".github/workflows/acme-cert.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: acme-cert
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore acme.sh state
+        uses: actions/cache@v4
+        with:
+          path: /root/.acme.sh
+          key: acme-state-v1
+
+      - name: Install acme.sh
+        run: |
+          if [ ! -x /root/.acme.sh/acme.sh ]; then
+            curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null
+          fi
+
+      - name: Sign CSR (renews only when due)
+        env:
+          DuckDNS_Token: ${{ secrets.DD_TOKEN }}
+        run: |
+          /root/.acme.sh/acme.sh --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt
+          CERTDIR=$(ls -d /root/.acme.sh/suzimo.duckdns.org* | head -1)
+          cp "$CERTDIR/fullchain.cer" certs/fullchain.pem
+          openssl x509 -in certs/fullchain.pem -noout -subject -enddate
+
+      - name: Commit certificate if changed
+        run: |
+          git config user.name "acme-bot"
+          git config user.email "acme-bot@users.noreply.github.com"
+          git add certs/fullchain.pem
+          if git diff --cached --quiet; then
+            echo "Certificate unchanged, skip commit"
+            exit 0
+          fi
+          git commit -m "Renew TLS cert for suzimo.duckdns.org $(date -u +%FT%TZ)"
+          git push
