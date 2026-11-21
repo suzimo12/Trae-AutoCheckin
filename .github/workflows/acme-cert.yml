@@ -23,15 +23,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 2026-11-21: Let's Encrypt 限制同一出口 IP 每 3 小时只能注册 10 个新
+      # ACME 账号, 而 GitHub runner 的出口 IP 是全球共享池, 常被占满 ->
+      # 注册被拒 -> 签发几秒内失败(时好时坏取决于抽到哪个 IP)。
+      # 把 ~/.acme.sh(账号密钥+已验证授权)缓存复用, 只注册一次, 绕开限制。
+      - name: Restore acme.sh account state (avoid LE per-IP registration limit)
+        uses: actions/cache@v4
+        with:
+          path: ~/.acme.sh
+          key: acme-account-v1
+
       - name: Install acme.sh
         run: |
           curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null 2>&1 || true
           chmod +x "$HOME/.acme.sh/acme.sh"
           "$HOME/.acme.sh/acme.sh" --version | tail -1
 
-      # 2026-11-21: 上一轮定时签发 7 秒内无日志可查地失败。
-      # 加预检: 签发前先真实调用 DuckDNS API 写一次 TXT, 失败时直接给出
-      # 明确错误(token 失效/被限流/域名被禁), 不再让 acme.sh 深处报模糊错。
+      # 签发前先真实调用 DuckDNS API, 失败时给出明确错误(token/限流/禁用)。
       - name: Preflight DuckDNS API (diagnose before signing)
         env:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
@@ -50,7 +58,7 @@ jobs:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
         run: |
           "$HOME/.acme.sh/acme.sh" --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt || {
-            echo "::error::acme.sh 签发失败 -- 请查看上方完整输出(重点看 add TXT 响应与 LE 错误)"
+            echo "::error::acme.sh 签发失败 -- 请查看上方完整输出(重点看 Register account / add TXT 响应与 LE 错误)"
             exit 1
           }
           CERTDIR=$(ls -d "$HOME"/.acme.sh/suzimo.duckdns.org* | head -1)
