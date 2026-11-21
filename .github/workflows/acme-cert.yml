@@ -29,11 +29,30 @@ jobs:
           chmod +x "$HOME/.acme.sh/acme.sh"
           "$HOME/.acme.sh/acme.sh" --version | tail -1
 
+      # 2026-11-21: 上一轮定时签发 7 秒内无日志可查地失败。
+      # 加预检: 签发前先真实调用 DuckDNS API 写一次 TXT, 失败时直接给出
+      # 明确错误(token 失效/被限流/域名被禁), 不再让 acme.sh 深处报模糊错。
+      - name: Preflight DuckDNS API (diagnose before signing)
+        env:
+          DuckDNS_Token: ${{ secrets.DD_TOKEN }}
+        run: |
+          [ -n "$DuckDNS_Token" ] || { echo "::error::缺少 DD_TOKEN Secret"; exit 1; }
+          R=$(curl -s -m 20 "https://www.duckdns.org/update?domains=suzimo&token=$DuckDNS_Token&txt=diag-$(date +%s)" || true)
+          echo "DuckDNS 预检响应: ${R:-<空>}"
+          if [ "$R" != "OK" ]; then
+            echo "::error::DuckDNS API 预检失败(响应=${R:-空}) -- token 失效、域名被禁用或限流, 签发必然失败"
+            exit 1
+          fi
+          echo "DuckDNS API 预检通过, 开始签发"
+
       - name: Sign CSR (renews only when due)
         env:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
         run: |
-          "$HOME/.acme.sh/acme.sh" --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt
+          "$HOME/.acme.sh/acme.sh" --issue --sign-csr --csr certs/suzimo.csr --dns dns_duckdns --server letsencrypt || {
+            echo "::error::acme.sh 签发失败 -- 请查看上方完整输出(重点看 add TXT 响应与 LE 错误)"
+            exit 1
+          }
           CERTDIR=$(ls -d "$HOME"/.acme.sh/suzimo.duckdns.org* | head -1)
           cp "$CERTDIR/fullchain.cer" certs/fullchain.pem
           openssl x509 -in certs/fullchain.pem -noout -subject -enddate
