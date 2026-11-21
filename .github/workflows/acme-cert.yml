@@ -23,24 +23,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 2026-11-21: Let's Encrypt 限制同一出口 IP 每 3 小时只能注册 10 个新
-      # ACME 账号, 而 GitHub runner 的出口 IP 是全球共享池, 常被占满 ->
-      # 注册被拒 -> 签发几秒内失败(时好时坏取决于抽到哪个 IP)。
-      # 把 ~/.acme.sh(账号密钥+已验证授权)缓存复用, 只注册一次, 绕开限制。
-      - name: Restore acme.sh account state (avoid LE per-IP registration limit)
-        uses: actions/cache@v4
-        with:
-          path: ~/.acme.sh
-          key: acme-account-v1
-
-      - name: Install acme.sh
+      # 2026-11-21: 根因修复。LE 限制同一域名每 168h(7天)最多签发 5 张
+      # "重复证书"(new-certificates-per-exact-set-of-identifiers), 而 runner
+      # 无状态导致每次定时任务都真实签发, 5 张配额 1~2 天就被烧光, 之后
+      # 全部 429 秒挂。改为: repo 里现有证书剩余 > 60 天时直接跳过签发,
+      # 只在到期前 30 天内才真正续签 => 每 7 天最多消耗 1 张配额, 永远够用。
+      - name: Skip signing if existing cert is still fresh
+        id: freshness
         run: |
-          curl -s https://get.acme.sh | sh -s email=opi-admin@suzimo.duckdns.org >/dev/null 2>&1 || true
-          chmod +x "$HOME/.acme.sh/acme.sh"
-          "$HOME/.acme.sh/acme.sh" --version | tail -1
+          END=$(openssl x509 -in certs/fullchain.pem -noout -enddate | cut -d= -f2)
+          REMAIN=$(( ( $(date -d "$END" +%s) - $(date +%s) ) / 86400 ))
+          echo "现有证书到期: $END (剩余 ${REMAIN} 天)"
+          if [ "$REMAIN" -gt 60 ]; then
+            echo "::notice::证书剩余 ${REMAIN} 天, 无需续签 -- 跳过签发, 节省 LE 每周 5 张的重复证书配额"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      # 签发前先真实调用 DuckDNS API, 失败时给出明确错误(token/限流/禁用)。
+      # 2026-11-21: 签发前先真实调用 DuckDNS API, 失败时给出明确错误
+      # (token 失效/被限流/域名被禁), 不再让 acme.sh 深处报模糊错。
       - name: Preflight DuckDNS API (diagnose before signing)
+        if: steps.freshness.outputs.skip != 'true'
         env:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
         run: |
@@ -54,6 +58,7 @@ jobs:
           echo "DuckDNS API 预检通过, 开始签发"
 
       - name: Sign CSR (renews only when due)
+        if: steps.freshness.outputs.skip != 'true'
         env:
           DuckDNS_Token: ${{ secrets.DD_TOKEN }}
         run: |
@@ -66,6 +71,7 @@ jobs:
           openssl x509 -in certs/fullchain.pem -noout -subject -enddate
 
       - name: Commit certificate if changed
+        if: steps.freshness.outputs.skip != 'true'
         run: |
           git config user.name "acme-bot"
           git config user.email "acme-bot@users.noreply.github.com"
