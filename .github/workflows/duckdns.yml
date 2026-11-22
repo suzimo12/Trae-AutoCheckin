@@ -1,7 +1,10 @@
 name: DuckDNS AAAA Sync
 
-# 每 10 分钟从香橙派(经 Tailscale Funnel 的 ops_agent)动态读取当前公网 IPv6,
-# 与 DuckDNS 记录比对,不一致才推送。前缀无关:运营商换前缀后自动跟随。
+# 每 10 分钟从香橙派(经 Tailscale Funnel 的 ops_agent)读取「浮动服务地址」,
+# 与 DuckDNS 记录比对,不一致才推送。
+# 重要(2026-11-22 起):地址来源是浮动服务地址 dead:beef:cafe:1,不读具体网卡。
+# 该地址有线在线时挂 end0、拔线后 3 秒内漂到 wlan0(见手册 13.15),
+# 所以这里必须全接口搜索,否则每 10 分钟会把记录覆盖回接口地址,导致拔线后域名指飞。
 # 安全设计:
 #   1. token 全部存 GitHub Secrets,仓库内无明文
 #   2. 取地址失败/格式异常 -> 直接跳过,绝不推送(防止把域名指飞)
@@ -38,7 +41,7 @@ jobs:
       - name: 从板子读取当前 IPv6 地址
         id: addr
         run: |
-          CMD="ip -6 addr show end0 | grep 'scope global' | grep -v temporary | grep -v 128 | head -1 | awk '{print \$2}' | cut -d/ -f1"
+          CMD="ip -6 addr show | grep 'dead:beef:cafe' | head -1 | awk '{print \$2}' | cut -d/ -f1"
           RESP=$(curl -sk -m 30 "$OPS_URL" -H "X-Auth-Token: $OPS_TOKEN" -H 'Content-Type: application/json' -d "$(python3 -c 'import json,sys; print(json.dumps({"cmd": sys.argv[1]}))' "$CMD")")
           echo "raw: $RESP"
           ADDR=$(printf '%s' "$RESP" | python3 -c "import sys,json,re; d=json.load(sys.stdin); out=(d.get('output','') or '') if d.get('ok') else ''; m=re.search(r'\b(2[0-9a-f]{0,3}(?::[0-9a-f]{1,4}){2,7})\b', out, re.I); print(m.group(1) if m else '')" 2>/dev/null || true)
